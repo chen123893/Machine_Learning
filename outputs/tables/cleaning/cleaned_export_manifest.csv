@@ -1,0 +1,7 @@
+field,value
+output_path,/Users/zichen/Machine_Learning/data/processed/loan_default_cleaned.csv
+rows,148670
+columns,34
+sha256,c1975912253142ef42ed15301e2ace013010a1d2ee1e06dda94fbd7f525b01ff
+source_file,/Users/zichen/Machine_Learning/data/raw/Loan_Default.csv
+model_training_performed,False

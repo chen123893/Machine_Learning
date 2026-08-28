@@ -1,0 +1,12 @@
+validation_check,passed,expected,observed
+Expected row count after exact deduplication,True,148670,148670
+Column names are unique,True,True,True
+Target has no missing values,True,0,0
+Target remains binary 0/1,True,"{0, 1}","[0, 1]"
+Identifier has no missing values,True,0,0
+Identifier remains unique,True,True,True
+No exact duplicates remain,True,0,0
+No leading/trailing categorical whitespace remains,True,0,0
+Inconsistent region labels removed,True,0,0
+Misspelled security label removed,True,0,0
+Target counts preserved,True,True,True

@@ -1,0 +1,7 @@
+metric,value
+rows,148670
+columns,34
+numeric columns,13
+categorical columns,21
+missing target values,0
+unique target values,"[0, 1]"

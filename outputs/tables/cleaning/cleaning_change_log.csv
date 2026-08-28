@@ -1,0 +1,6 @@
+cleaning_action,items_changed,reason,risk_or_limitation
+Standardise column names to snake_case and correct neg_amortization spelling,13,"Consistent, reproducible feature naming","Names change, but values do not"
+Strip leading/trailing whitespace from categorical values,0,Prevent accidental duplicate categories,Internal whitespace is intentionally preserved
+Standardise south/central region capitalisation,72713,Merge labels that differ only by case,Assumes case has no semantic meaning
+Correct Indriect security label to Indirect,33,Treat apparent spelling error as one category,Assumption should be confirmed against source documentation
+Remove exact duplicate rows,0,Prevent repeated identical observations,No deduplication is performed on ID alone

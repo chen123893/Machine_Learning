@@ -1,0 +1,4 @@
+check,count,decision
+exact duplicate rows,0,Remove exact duplicates only if present
+duplicate IDs,0,Investigate; never drop automatically by ID
+duplicates excluding ID,0,Review only because different IDs may represent separate applications

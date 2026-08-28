@@ -1,0 +1,11 @@
+rule,severity,flagged_count,flagged_pct,recommended_action
+numeric_infinite,Impossible,0,0.0,Investigate source or set to missing only with evidence
+loan_amount_non_positive,Impossible,0,0.0,Investigate source; loan amount should be positive
+term_non_positive,Impossible,0,0.0,Investigate source; term should be positive
+credit_score_outside_300_900,Potentially impossible,0,0.0,Confirm scoring scale with source
+negative_income,Potentially impossible,0,0.0,Confirm units and definition
+zero_income,Suspicious but plausible,1260,0.848,Retain; examine missingness/zero semantics
+non_positive_interest_rate,Suspicious,1,0.001,Retain pending domain verification
+non_positive_property_value,Potentially impossible,0,0.0,Confirm source; do not repair automatically
+ltv_above_200_pct,Extreme / possible data issue,17,0.011,Investigate individually; do not remove by IQR alone
+dti_outside_0_100,Potentially impossible,0,0.0,Confirm ratio definition and range
