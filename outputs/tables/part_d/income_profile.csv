@@ -1,0 +1,9 @@
+measure,value
+observed,111581.0
+missing,7355.0
+zero,1033.0
+observed_minimum,0.0
+observed_median,5760.0
+observed_maximum,578580.0
+raw_skewness,18.10985280681122
+log_skewness,-5.0864551117554955
