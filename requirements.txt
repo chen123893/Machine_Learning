@@ -4,6 +4,7 @@ matplotlib>=3.9,<4
 seaborn>=0.13,<1
 scipy>=1.13,<2
 scikit-learn>=1.5,<2
+xgboost>=3.4.1,<4
 jupyterlab>=4.2,<5
 ipykernel>=6.29,<7
 nbconvert>=7.16,<8
