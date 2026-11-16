@@ -17,7 +17,6 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import chi2_contingency
 from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -26,21 +25,12 @@ TARGET = "status"
 IDENTIFIER_COLUMNS = ["id"]
 CONSTANT_COLUMNS = ["year"]
 
-# These fields are quarantined from the first baseline because their missingness
-# or categories almost determine the target in this dataset. They can only be
-# reconsidered after the business confirms that they are available at decision
-# time and are not consequences of the loan outcome.
-LEAKAGE_QUARANTINE = [
-    "rate_of_interest",
-    "interest_rate_spread",
-    "upfront_charges",
-    "property_value",
-    "ltv",
-    "dtir1",
-    "age",
-    "submission_of_application",
-    "credit_type",
-]
+# User-approved policy inspired by the supplied Kaggle discussion. In this file,
+# observed interest_rate_spread perfectly identifies non-defaults. Drop the
+# compromised fields BEFORE complete-case filtering so defaults are not erased.
+PRICING_EXCLUSIONS = ["rate_of_interest", "interest_rate_spread", "upfront_charges"]
+LEAKAGE_QUARANTINE = PRICING_EXCLUSIONS
+GENDER_MAPPING = {"Female": 0, "Male": 1}
 
 EXPECTED_RAW_COLUMNS = {
     "ID",
@@ -84,7 +74,7 @@ FEATURE_DESCRIPTIONS = {
     "id": "Unique loan application identifier; excluded from modelling.",
     "year": "Calendar year of the application record.",
     "loan_limit": "Whether the loan conforms to the applicable loan limit.",
-    "gender": "Applicant gender category as supplied by the source dataset.",
+    "gender": "Cleaned cohort binary mapping: Female=0 and Male=1; Joint and Sex Not Available excluded.",
     "approv_in_adv": "Whether approval was obtained in advance.",
     "loan_type": "Source-coded loan product type.",
     "loan_purpose": "Source-coded purpose of the loan.",
@@ -147,12 +137,8 @@ def load_raw_data(path: str | Path) -> pd.DataFrame:
     return df
 
 
-def deterministic_clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply defensible, outcome-independent cleaning only.
-
-    Statistical transformations such as imputation and scaling are deliberately
-    excluded because they must later be fitted on training folds only.
-    """
+def normalise_raw_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardise source labels without filtering rows or mapping gender."""
     clean = df.copy()
     clean.columns = [_snake_case(column) for column in clean.columns]
     clean = clean.rename(columns={"neg_ammortization": "neg_amortization"})
@@ -171,6 +157,34 @@ def deterministic_clean(df: pd.DataFrame) -> pd.DataFrame:
     # Remove exact duplicates only if they exist; never deduplicate on ID alone.
     clean = clean.drop_duplicates().reset_index(drop=True)
     return clean
+
+
+def cleaning_stages(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return the approved complete-case cohort and a sequential attrition audit."""
+    clean = normalise_raw_data(df)
+    records = []
+    def record(stage, frame):
+        records.append({"stage": stage, "rows": len(frame), "columns": frame.shape[1],
+                        "non_default": int(frame[TARGET].eq(0).sum()),
+                        "default": int(frame[TARGET].eq(1).sum()),
+                        "default_rate_pct": float(frame[TARGET].mean() * 100)})
+    record("Normalised raw records", clean)
+    clean = clean.drop(columns=PRICING_EXCLUSIONS)
+    record("Exclude three compromised pricing columns", clean)
+    clean = clean.dropna(axis=0, how="any").copy()
+    record("Remove rows missing any retained value", clean)
+    clean = clean.loc[clean["gender"].isin(GENDER_MAPPING)].copy()
+    clean["gender"] = clean["gender"].map(GENDER_MAPPING).astype("int8")
+    clean = clean.reset_index(drop=True)
+    record("Keep Female and Male only and encode Female 0 Male 1", clean)
+    if set(clean[TARGET].unique()) != {0, 1}:
+        raise ValueError("Cleaning must retain both outcome classes.")
+    return clean, pd.DataFrame(records)
+
+
+def deterministic_clean(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop pricing columns, incomplete rows, and unsupported gender categories."""
+    return cleaning_stages(df)[0]
 
 
 def feature_dictionary(df: pd.DataFrame) -> pd.DataFrame:
@@ -217,7 +231,8 @@ def cleaning_change_log(raw: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFrame:
 
     region_changes = int(raw["Region"].isin(["south", "central"]).sum())
     security_changes = int((raw["Security_Type"] == "Indriect").sum())
-    duplicates_removed = int(len(raw) - len(clean))
+    duplicates_removed = int(raw.duplicated().sum())
+    _, stages = cleaning_stages(raw)
 
     return pd.DataFrame(
         [
@@ -251,6 +266,17 @@ def cleaning_change_log(raw: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFrame:
                 "reason": "Prevent repeated identical observations",
                 "risk_or_limitation": "No deduplication is performed on ID alone",
             },
+            {"cleaning_action": "Drop three compromised pricing columns",
+             "items_changed": 3, "reason": "Outcome-linked missingness; exclude before dropping incomplete rows",
+             "risk_or_limitation": "Motivated by user-supplied Kaggle excerpt and verified locally; no missingness indicator added"},
+            {"cleaning_action": "Remove incomplete rows in retained columns",
+             "items_changed": int(stages.iloc[1].rows - stages.iloc[2].rows),
+             "reason": "User-selected complete-case analysis without imputation",
+             "risk_or_limitation": "Changes class balance and represented population; selection bias possible"},
+            {"cleaning_action": "Keep Female and Male and encode Female 0 Male 1",
+             "items_changed": int(stages.iloc[2].rows - stages.iloc[3].rows),
+             "reason": "User explicitly selected binary gender cohort",
+             "risk_or_limitation": "Joint and Sex Not Available applications are excluded; conclusions do not generalise to them"},
         ]
     )
 
@@ -267,9 +293,10 @@ def post_clean_validation(raw: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFram
         )
         for column in string_columns
     )
-    expected_rows = len(raw) - int(raw.duplicated().sum())
+    expected = deterministic_clean(raw)
+    expected_rows = len(expected)
     checks = [
-        ("Expected row count after exact deduplication", len(clean) == expected_rows, expected_rows, len(clean)),
+        ("Expected row count after approved cohort filters", len(clean) == expected_rows, expected_rows, len(clean)),
         ("Column names are unique", clean.columns.is_unique, True, clean.columns.is_unique),
         ("Target has no missing values", clean[TARGET].isna().sum() == 0, 0, int(clean[TARGET].isna().sum())),
         ("Target remains binary 0/1", set(clean[TARGET].unique()) == {0, 1}, "{0, 1}", sorted(clean[TARGET].unique().tolist())),
@@ -279,7 +306,10 @@ def post_clean_validation(raw: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFram
         ("No leading/trailing categorical whitespace remains", whitespace_cells == 0, 0, whitespace_cells),
         ("Inconsistent region labels removed", not clean["region"].isin(["south", "central"]).any(), 0, int(clean["region"].isin(["south", "central"]).sum())),
         ("Misspelled security label removed", not (clean["security_type"] == "Indriect").any(), 0, int((clean["security_type"] == "Indriect").sum())),
-        ("Target counts preserved", raw["Status"].value_counts().sort_index().equals(clean[TARGET].value_counts().sort_index()), True, raw["Status"].value_counts().sort_index().equals(clean[TARGET].value_counts().sort_index())),
+        ("Target counts agree with filtered cohort", expected[TARGET].value_counts().equals(clean[TARGET].value_counts()), True, expected[TARGET].value_counts().equals(clean[TARGET].value_counts())),
+        ("No retained missing values", not clean.isna().any().any(), 0, int(clean.isna().sum().sum())),
+        ("Pricing columns absent", not set(PRICING_EXCLUSIONS) & set(clean), True, not bool(set(PRICING_EXCLUSIONS) & set(clean))),
+        ("Binary gender mapping", set(clean["gender"].unique()) == {0, 1}, "Female=0 Male=1", sorted(clean["gender"].unique().tolist())),
     ]
     return pd.DataFrame(
         checks, columns=["validation_check", "passed", "expected", "observed"]
@@ -296,7 +326,7 @@ def data_validity_audit(df: pd.DataFrame) -> pd.DataFrame:
         ("credit_score_outside_300_900", ~df["credit_score"].between(300, 900), "Potentially impossible", "Confirm scoring scale with source"),
         ("negative_income", df["income"].notna() & df["income"].lt(0), "Potentially impossible", "Confirm units and definition"),
         ("zero_income", df["income"].eq(0), "Suspicious but plausible", "Retain; examine missingness/zero semantics"),
-        ("non_positive_interest_rate", df["rate_of_interest"].notna() & df["rate_of_interest"].le(0), "Suspicious", "Retain pending domain verification"),
+        ("non_positive_interest_rate", df.get("rate_of_interest", pd.Series(np.nan, index=df.index)).le(0), "Suspicious", "Pricing field excluded from cleaned cohort"),
         ("non_positive_property_value", df["property_value"].notna() & df["property_value"].le(0), "Potentially impossible", "Confirm source; do not repair automatically"),
         ("ltv_above_200_pct", df["ltv"].notna() & df["ltv"].gt(200), "Extreme / possible data issue", "Investigate individually; do not remove by IQR alone"),
         ("dti_outside_0_100", df["dtir1"].notna() & ~df["dtir1"].between(0, 100), "Potentially impossible", "Confirm ratio definition and range"),
@@ -440,7 +470,9 @@ def missingness_target_audit(df: pd.DataFrame) -> pd.DataFrame:
                 ),
             }
         )
-    return pd.DataFrame(rows).sort_values(
+    return pd.DataFrame(rows, columns=["feature", "missing_count", "missing_pct",
+        "default_rate_when_present_pct", "default_rate_when_missing_pct",
+        "absolute_rate_gap_pp", "perfect_separation_warning"]).sort_values(
         "absolute_rate_gap_pp", ascending=False
     ).round(3)
 
@@ -475,7 +507,7 @@ def iqr_outlier_summary(
 
 
 def feature_sets(df: pd.DataFrame) -> tuple[list[str], list[str], list[str]]:
-    """Return conservative baseline, numeric, and categorical feature lists."""
+    """Return retained complete-case predictors and their numeric/categorical roles."""
     excluded = set(IDENTIFIER_COLUMNS + CONSTANT_COLUMNS + [TARGET] + LEAKAGE_QUARANTINE)
     baseline_features = [column for column in df.columns if column not in excluded]
     numeric_features = [
@@ -492,16 +524,14 @@ def feature_sets(df: pd.DataFrame) -> tuple[list[str], list[str], list[str]]:
 def build_unfitted_preprocessor(
     numeric_features: list[str], categorical_features: list[str]
 ) -> ColumnTransformer:
-    """Define, but do not fit, the later training-fold preprocessing pipeline."""
+    """Define scaling/encoding without imputation for complete-case training."""
     numeric_pipeline = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
             ("scaler", StandardScaler()),
         ]
     )
     categorical_pipeline = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="constant", fill_value="Missing")),
             (
                 "one_hot",
                 OneHotEncoder(handle_unknown="ignore", sparse_output=True),

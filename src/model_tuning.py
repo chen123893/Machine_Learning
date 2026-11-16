@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
 
 from .data_preparation import TrainingFoldPreprocessor
@@ -19,18 +20,38 @@ from .model_validation import top_fraction_predictions
 SEED = 42
 MODEL_NAMES = ("Logistic Regression", "Random Forest", "XGBoost")
 SEARCH_GRIDS = {
-    "Logistic Regression": {"model__C": [1.0, 0.01, 0.1, 10.0], "prepare__log_income": [False, True]},
+    "Logistic Regression": {"model__C": [1.0, 0.01, 0.1, 10.0], "prepare__log_income": [False, True], "balanced": [False, True]},
     "Random Forest": [
-        {"model__n_estimators": [100], "model__max_depth": [12, 18], "model__min_samples_leaf": [10, 5]},
-        {"model__n_estimators": [160], "model__max_depth": [12, 18], "model__min_samples_leaf": [10]},
-        {"model__n_estimators": [100], "model__max_depth": [8], "model__min_samples_leaf": [20]},
+        {"model__n_estimators": [100], "model__max_depth": [12, 18], "model__min_samples_leaf": [10, 5], "balanced": [False, True]},
+        {"model__n_estimators": [160], "model__max_depth": [12, 18], "model__min_samples_leaf": [10], "balanced": [False, True]},
+        {"model__n_estimators": [100], "model__max_depth": [8], "model__min_samples_leaf": [20], "balanced": [False, True]},
     ],
     "XGBoost": {
         "model__n_estimators": [120, 220],
         "model__max_depth": [4, 6],
         "model__learning_rate": [0.1, 0.05],
+        "balanced": [False, True],
     },
 }
+
+
+class BalancedTrainingPipeline(Pipeline):
+    """Compute optional inverse-frequency weights from each fit's labels only.
+
+    Computing weights here (rather than before GridSearchCV or stacking) keeps
+    inner validation labels out of training weights. Validation remains natural.
+    """
+    def __init__(self, steps, *, balanced=False, memory=None, verbose=False):
+        super().__init__(steps, memory=memory, verbose=verbose)
+        self.balanced = balanced
+
+    def fit(self, X, y=None, **params):
+        self.class_counts_ = dict(zip(*np.unique(y, return_counts=True)))
+        if self.balanced:
+            if "model__sample_weight" in params:
+                raise ValueError("Do not supply weights twice.")
+            params["model__sample_weight"] = compute_sample_weight("balanced", y)
+        return super().fit(X, y, **params)
 
 
 def make_pipeline(model_name, params=None, *, workers=4):
@@ -50,7 +71,7 @@ def make_pipeline(model_name, params=None, *, workers=4):
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
-    pipeline = Pipeline([("prepare", TrainingFoldPreprocessor()), ("model", model)])
+    pipeline = BalancedTrainingPipeline([("prepare", TrainingFoldPreprocessor()), ("model", model)])
     return pipeline.set_params(**(params or {}))
 
 

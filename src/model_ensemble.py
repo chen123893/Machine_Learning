@@ -17,6 +17,15 @@ MEMBERS = {"xgb": "XGBoost", "rf": "Random Forest"}
 METHODS = ("Soft voting", "Stacking")
 
 
+def configure_members(names):
+    """Select the best two development models; keep imported mapping references live."""
+    names = list(names)
+    if len(names) != 2 or len(set(names)) != 2 or not set(names).issubset(MODEL_NAMES):
+        raise ValueError("Expected two distinct supported base models.")
+    MEMBERS.clear()
+    MEMBERS.update(zip(("member_a", "member_b"), names))
+
+
 def make_ensemble(method, settings, *, workers=4):
     """Build a fresh ensemble from Part F settings for development or Part H."""
     estimators = [
@@ -65,8 +74,10 @@ def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
         # This is equivalent to fitting an independent VotingClassifier on this fold.
         scores["Soft voting"] = (scores["XGBoost"] + scores["Random Forest"]) / 2
         scores["Stacking"] = _default_probability(stack, X_val)
-        logistic = make_pipeline("Logistic Regression", settings["Logistic Regression"], workers=workers)
-        scores["Logistic Regression"] = _default_probability(logistic.fit(X_fit, y_fit), X_val)
+        for name in MODEL_NAMES:
+            if name not in scores:
+                other = make_pipeline(name, settings[name], workers=workers)
+                scores[name] = _default_probability(other.fit(X_fit, y_fit), X_val)
 
         y = y_val.to_numpy()
         queues = {name: top_fraction_predictions(p).astype(bool) for name, p in scores.items()}
@@ -83,19 +94,21 @@ def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
                 "top10_precision": caught / queue.sum(), "top10_recall": caught / y.sum(),
             })
 
-        xgb_queue, rf_queue = queues["XGBoost"], queues["Random Forest"]
+        first, second = MEMBERS.values()
+        xgb_queue, rf_queue = queues[first], queues[second]
         both = xgb_queue & rf_queue
         either = xgb_queue | rf_queue
         overlaps.append({
             "fold": fold,
-            "spearman_rank_correlation": pd.Series(scores["XGBoost"]).corr(pd.Series(scores["Random Forest"]), method="spearman"),
+            "member_a": first, "member_b": second,
+            "spearman_rank_correlation": pd.Series(scores[first]).corr(pd.Series(scores[second]), method="spearman"),
             "queue_jaccard": both.sum() / either.sum(),
             "defaults_caught_by_both": int(y[both].sum()),
-            "defaults_caught_only_by_xgb": int(y[xgb_queue & ~rf_queue].sum()),
-            "defaults_caught_only_by_rf": int(y[rf_queue & ~xgb_queue].sum()),
+            "defaults_caught_only_by_member_a": int(y[xgb_queue & ~rf_queue].sum()),
+            "defaults_caught_only_by_member_b": int(y[rf_queue & ~xgb_queue].sum()),
             "defaults_caught_by_neither": int(y[~either].sum()),
-            "stack_xgb_coefficient": stack.final_estimator_.coef_[0, 0],
-            "stack_rf_coefficient": stack.final_estimator_.coef_[0, 1],
+            "stack_member_a_coefficient": stack.final_estimator_.coef_[0, 0],
+            "stack_member_b_coefficient": stack.final_estimator_.coef_[0, 1],
         })
         print(f"Outer fold {fold}: five candidates scored; Part F baselines reproduced.", flush=True)
     if not np.all(coverage == 1):

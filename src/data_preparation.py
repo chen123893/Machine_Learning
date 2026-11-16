@@ -3,25 +3,19 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.utils.validation import check_is_fitted
 
-from .eda_preprocessing import TARGET, build_unfitted_preprocessor
+from .eda_preprocessing import TARGET, PRICING_EXCLUSIONS
 
 
 BASELINE_EXCLUSIONS = {
     "id": "Application identifier.",
     "year": "Single recorded year; no time variation in this dataset.",
-    "gender": "Sensitive attribute; excluded from the first model and retained in the cleaned data for auditing.",
-    "approv_in_adv": "Records an approval decision; exclude until its availability at scoring time is confirmed.",
-    "rate_of_interest": "Pricing information.",
-    "interest_rate_spread": "Pricing information.",
-    "upfront_charges": "Pricing information.",
-    "property_value": "Recorded valuation timing unverified.",
-    "ltv": "Requires an eligible valuation at scoring time.",
-    "dtir1": "Recorded underwriting ratio timing unverified.",
+    **{name: "Compromised pricing field removed before complete-case filtering." for name in PRICING_EXCLUSIONS},
 }
 
 
@@ -34,6 +28,10 @@ def split_loan_data(df: pd.DataFrame):
         raise ValueError("Expected a unique, non-missing ID for each application.")
 
     X = df.drop(columns=[TARGET, *BASELINE_EXCLUSIONS], errors="ignore")
+    if X.isna().any().any():
+        raise ValueError("Run the complete-case cleaning notebook before splitting.")
+    if set(df["gender"].unique()) != {0, 1}:
+        raise ValueError("Expected gender mapping Female=0, Male=1.")
     return train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
 
@@ -69,16 +67,17 @@ def screen_target_proxies(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
 
 
 class TrainingFoldPreprocessor(TransformerMixin, BaseEstimator):
-    """Screen with training labels and fit all transformations on those rows."""
+    """Audit possible proxies without removing user-selected complete-case inputs."""
 
     def __init__(self, *, log_income: bool = False):
         self.log_income = log_income
 
     def fit(self, X: pd.DataFrame, y):
+        if X.isna().any().any():
+            raise ValueError("Missing predictors are not permitted in the complete-case pipeline.")
         labels = y if isinstance(y, pd.Series) else pd.Series(y, index=X.index)
         self.screen_audit_ = screen_target_proxies(X, labels)
-        excluded = set(self.screen_audit_.loc[self.screen_audit_["flagged"], "feature"])
-        self.selected_features_ = [name for name in X.columns if name not in excluded]
+        self.selected_features_ = list(X.columns)
         self.transformer_ = build_preprocessor(X[self.selected_features_], log_income=self.log_income)
         # Use explicit zeros consistently for scikit-learn and XGBoost.
         self.transformer_.set_params(sparse_threshold=0.0)
@@ -87,6 +86,8 @@ class TrainingFoldPreprocessor(TransformerMixin, BaseEstimator):
 
     def transform(self, X: pd.DataFrame):
         check_is_fitted(self, "transformer_")
+        if X[self.selected_features_].isna().any().any():
+            raise ValueError("Missing predictors are not permitted; route incomplete applications for separate handling.")
         return self.transformer_.transform(X[self.selected_features_])
 
     def get_feature_names_out(self, input_features=None):
@@ -102,8 +103,10 @@ def build_preprocessor(X_train: pd.DataFrame, *, log_income: bool = False):
     """Build a fresh transformer to fit inside each training fold in Part E."""
     numeric = X_train.select_dtypes(include="number").columns.tolist()
     categorical = X_train.columns.difference(numeric, sort=False).tolist()
-    preprocessor = build_unfitted_preprocessor(numeric, categorical)
-    preprocessor.set_params(numeric__imputer__add_indicator=False)
+    preprocessor = ColumnTransformer([
+        ("numeric", Pipeline([("scaler", StandardScaler())]), numeric),
+        ("categorical", Pipeline([("one_hot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), categorical),
+    ], remainder="drop", verbose_feature_names_out=False)
 
     if log_income and "income" in numeric:
         income_pipeline = Pipeline([
