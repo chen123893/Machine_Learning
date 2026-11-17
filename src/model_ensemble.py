@@ -72,7 +72,7 @@ def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
         }
         # Equal-weight soft voting reuses the same fitted base models as the stack.
         # This is equivalent to fitting an independent VotingClassifier on this fold.
-        scores["Soft voting"] = (scores["XGBoost"] + scores["Random Forest"]) / 2
+        scores["Soft voting"] = np.mean([scores[name] for name in MEMBERS.values()], axis=0)
         scores["Stacking"] = _default_probability(stack, X_val)
         for name in MODEL_NAMES:
             if name not in scores:

@@ -113,7 +113,7 @@ def evaluate_models(X, y, folds, models, reference, seed=42):
                         "coefficient": pipeline.named_steps["model"].coef_[0],
                         "fold": fold_number,
                     }))
-                if name in {"Random Forest", "XGBoost"}:
+                if name in models:
                     # Permute original columns before preprocessing, preserving one-hot groups.
                     X_sample = X_val.iloc[sample_rows][prepare.selected_features_]
                     importance = permutation_importance(

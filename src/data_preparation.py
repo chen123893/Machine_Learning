@@ -2,20 +2,30 @@
 
 import numpy as np
 import pandas as pd
+from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, StandardScaler
 from sklearn.utils.validation import check_is_fitted
 
 from .eda_preprocessing import TARGET, PRICING_EXCLUSIONS
 
 
+AGE_BANDS = ["<25", "25-34", "35-44", "45-54", "55-64", "65-74", ">74"]
+
 BASELINE_EXCLUSIONS = {
     "id": "Application identifier.",
     "year": "Single recorded year; no time variation in this dataset.",
-    **{name: "Compromised pricing field removed before complete-case filtering." for name in PRICING_EXCLUSIONS},
+    **{name: "Pricing field with outcome-linked missingness." for name in PRICING_EXCLUSIONS},
+    "approv_in_adv": "Approval timing is unverified.",
+    "property_value": "Valuation availability and missingness require verification.",
+    "ltv": "Depends on the valuation; missingness is outcome-linked.",
+    "dtir1": "Availability of the recorded underwriting ratio is unverified.",
+    "submission_of_application": "Workflow field with outcome-linked missingness.",
+    "credit_type": "The EQUI category has a near-deterministic association with default.",
+
 }
 
 
@@ -28,10 +38,6 @@ def split_loan_data(df: pd.DataFrame):
         raise ValueError("Expected a unique, non-missing ID for each application.")
 
     X = df.drop(columns=[TARGET, *BASELINE_EXCLUSIONS], errors="ignore")
-    if X.isna().any().any():
-        raise ValueError("Run the complete-case cleaning notebook before splitting.")
-    if set(df["gender"].unique()) != {0, 1}:
-        raise ValueError("Expected gender mapping Female=0, Male=1.")
     return train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
 
@@ -67,14 +73,12 @@ def screen_target_proxies(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
 
 
 class TrainingFoldPreprocessor(TransformerMixin, BaseEstimator):
-    """Audit possible proxies without removing user-selected complete-case inputs."""
+    """Fit fixed eligible inputs and audit potential proxies on training labels."""
 
     def __init__(self, *, log_income: bool = False):
         self.log_income = log_income
 
     def fit(self, X: pd.DataFrame, y):
-        if X.isna().any().any():
-            raise ValueError("Missing predictors are not permitted in the complete-case pipeline.")
         labels = y if isinstance(y, pd.Series) else pd.Series(y, index=X.index)
         self.screen_audit_ = screen_target_proxies(X, labels)
         self.selected_features_ = list(X.columns)
@@ -86,8 +90,6 @@ class TrainingFoldPreprocessor(TransformerMixin, BaseEstimator):
 
     def transform(self, X: pd.DataFrame):
         check_is_fitted(self, "transformer_")
-        if X[self.selected_features_].isna().any().any():
-            raise ValueError("Missing predictors are not permitted; route incomplete applications for separate handling.")
         return self.transformer_.transform(X[self.selected_features_])
 
     def get_feature_names_out(self, input_features=None):
@@ -102,11 +104,20 @@ def _log_income_names(transformer, input_features):
 def build_preprocessor(X_train: pd.DataFrame, *, log_income: bool = False):
     """Build a fresh transformer to fit inside each training fold in Part E."""
     numeric = X_train.select_dtypes(include="number").columns.tolist()
-    categorical = X_train.columns.difference(numeric, sort=False).tolist()
+    # Age is ordered, while gender remains a nominal one-hot category.
+    numeric = [column for column in numeric if column != "age"]
+    categorical = [column for column in X_train.columns.difference(numeric, sort=False) if column != "age"]
     preprocessor = ColumnTransformer([
-        ("numeric", Pipeline([("scaler", StandardScaler())]), numeric),
-        ("categorical", Pipeline([("one_hot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), categorical),
+        ("numeric", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), numeric),
+        ("categorical", Pipeline([("imputer", SimpleImputer(strategy="constant", fill_value="Missing")),
+                                  ("one_hot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), categorical),
     ], remainder="drop", verbose_feature_names_out=False)
+
+    if "age" in X_train:
+        preprocessor.transformers.append(("age", Pipeline([
+            ("imputer", SimpleImputer(strategy="most_frequent", add_indicator=False)),
+            ("ordinal", OrdinalEncoder(categories=[AGE_BANDS], handle_unknown="error")),
+        ]), ["age"]))
 
     if log_income and "income" in numeric:
         income_pipeline = Pipeline([
