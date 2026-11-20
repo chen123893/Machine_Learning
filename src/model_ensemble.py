@@ -3,18 +3,75 @@
 import json
 
 import numpy as np
+import optuna
 import pandas as pd
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import StackingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.utils import Bunch
+from sklearn.utils.validation import check_is_fitted
 
 from .model_tuning import MODEL_NAMES, SEED, make_pipeline
 from .model_validation import top_fraction_predictions
 
 
-MEMBERS = {"xgb": "XGBoost", "rf": "Random Forest"}
-METHODS = ("Soft voting", "Stacking")
+MEMBERS = {"xgb": "XGBoost", "cat": "CatBoost"}
+METHODS = ("Soft voting", "Weighted soft voting", "Stacking")
+
+
+class OOFWeightedVotingClassifier(ClassifierMixin, BaseEstimator):
+    """Choose two voting weights using OOF predictions inside each fit."""
+
+    def __init__(self, estimators, *, weight_index=0, n_splits=3, n_trials=40, random_state=SEED):
+        self.estimators = estimators
+        self.weight_index = weight_index
+        self.n_splits = n_splits
+        self.n_trials = n_trials
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        labels = np.asarray(y)
+        if len(self.estimators) != 2 or not np.array_equal(np.unique(labels), [0, 1]):
+            raise ValueError("Expected two estimators and binary default labels.")
+        cv = list(StratifiedKFold(self.n_splits, shuffle=True, random_state=self.random_state).split(X, labels))
+        matrix = np.column_stack([
+            cross_val_predict(clone(estimator), X, y, cv=cv, method="predict_proba", n_jobs=1)[:, 1]
+            for _, estimator in self.estimators
+        ])
+        if not np.isfinite(matrix).all():
+            raise ValueError("OOF probabilities must be finite.")
+        primary, secondary = self.weight_index, 1 - self.weight_index
+
+        def objective(trial):
+            w = trial.suggest_float("primary_weight", 0.0, 1.0)
+            p = w * matrix[:, primary] + (1 - w) * matrix[:, secondary]
+            return float(np.mean([average_precision_score(labels[val], p[val]) for _, val in cv]))
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=self.random_state))
+        for weight in (0.0, 0.25, 0.5, 0.75, 1.0):
+            study.enqueue_trial({"primary_weight": weight})
+        study.optimize(objective, n_trials=self.n_trials, n_jobs=1, show_progress_bar=False)
+        w = float(study.best_params["primary_weight"])
+        self.weights_ = np.empty(2)
+        self.weights_[primary], self.weights_[secondary] = w, 1 - w
+        self.best_inner_ap_ = float(study.best_value)
+        self.optuna_trials_ = study.trials_dataframe()
+        self.oof_probabilities_ = matrix
+        self.estimators_ = [clone(estimator).fit(X, y) for _, estimator in self.estimators]
+        self.named_estimators_ = Bunch(**{name: estimator for (name, _), estimator in zip(self.estimators, self.estimators_)})
+        self.classes_ = np.array([0, 1])
+        self.n_features_in_ = X.shape[1]
+        return self
+
+    def predict_proba(self, X):
+        check_is_fitted(self, "estimators_")
+        return sum(weight * estimator.predict_proba(X) for weight, estimator in zip(self.weights_, self.estimators_))
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
 
 
 def configure_members(names):
@@ -34,6 +91,9 @@ def make_ensemble(method, settings, *, workers=4):
     ]
     if method == "Soft voting":
         return VotingClassifier(estimators, voting="soft", n_jobs=1)
+    if method == "Weighted soft voting":
+        primary = list(MEMBERS.values()).index("XGBoost") if "XGBoost" in MEMBERS.values() else 0
+        return OOFWeightedVotingClassifier(estimators, weight_index=primary)
     if method == "Stacking":
         return StackingClassifier(
             estimators, final_estimator=LogisticRegression(max_iter=1000),
@@ -55,7 +115,7 @@ def _default_probability(estimator, X):
 def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
     """Use fold-specific Part F winners and compare on the same outer rows."""
     tuned = part_f_scores.query("variant == 'Nested tuned'").set_index(["fold", "model"], verify_integrity=True)
-    records, overlaps = [], []
+    records, overlaps, trials = [], [], []
     coverage = np.zeros(len(y_dev), dtype=int)
     for fold, (train, validation) in enumerate(folds, start=1):
         if np.intersect1d(train, validation).size or coverage[validation].any():
@@ -74,6 +134,9 @@ def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
         # This is equivalent to fitting an independent VotingClassifier on this fold.
         scores["Soft voting"] = np.mean([scores[name] for name in MEMBERS.values()], axis=0)
         scores["Stacking"] = _default_probability(stack, X_val)
+        weighted = make_ensemble("Weighted soft voting", settings, workers=workers).fit(X_fit, y_fit)
+        scores["Weighted soft voting"] = _default_probability(weighted, X_val)
+        trials.append(weighted.optuna_trials_.assign(fold=fold))
         for name in MODEL_NAMES:
             if name not in scores:
                 other = make_pipeline(name, settings[name], workers=workers)
@@ -95,22 +158,25 @@ def evaluate_ensembles(X_dev, y_dev, folds, part_f_scores, *, workers=4):
             })
 
         first, second = MEMBERS.values()
-        xgb_queue, rf_queue = queues[first], queues[second]
-        both = xgb_queue & rf_queue
-        either = xgb_queue | rf_queue
+        first_queue, second_queue = queues[first], queues[second]
+        both = first_queue & second_queue
+        either = first_queue | second_queue
         overlaps.append({
             "fold": fold,
             "member_a": first, "member_b": second,
             "spearman_rank_correlation": pd.Series(scores[first]).corr(pd.Series(scores[second]), method="spearman"),
             "queue_jaccard": both.sum() / either.sum(),
             "defaults_caught_by_both": int(y[both].sum()),
-            "defaults_caught_only_by_member_a": int(y[xgb_queue & ~rf_queue].sum()),
-            "defaults_caught_only_by_member_b": int(y[rf_queue & ~xgb_queue].sum()),
+            "defaults_caught_only_by_member_a": int(y[first_queue & ~second_queue].sum()),
+            "defaults_caught_only_by_member_b": int(y[second_queue & ~first_queue].sum()),
             "defaults_caught_by_neither": int(y[~either].sum()),
             "stack_member_a_coefficient": stack.final_estimator_.coef_[0, 0],
             "stack_member_b_coefficient": stack.final_estimator_.coef_[0, 1],
+            "voting_member_a_weight": weighted.weights_[0],
+            "voting_member_b_weight": weighted.weights_[1],
+            "voting_inner_ap": weighted.best_inner_ap_,
         })
-        print(f"Outer fold {fold}: five candidates scored; Part F baselines reproduced.", flush=True)
+        print(f"Outer fold {fold}: six candidates scored; Part F baselines reproduced.", flush=True)
     if not np.all(coverage == 1):
         raise ValueError("Outer validation folds must cover every development row exactly once.")
-    return pd.DataFrame(records), pd.DataFrame(overlaps)
+    return pd.DataFrame(records), pd.DataFrame(overlaps), pd.concat(trials, ignore_index=True)

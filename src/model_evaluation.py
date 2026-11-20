@@ -84,7 +84,7 @@ def _default_scores(model, X):
     return p
 
 
-def evaluate_holdout(models, X_dev, y_dev, X_holdout, y_holdout, *, thresholds=None):
+def evaluate_holdout(models, X_dev, y_dev, X_holdout, y_holdout, *, thresholds=None, voting_weights=None):
     """Apply frozen cutoffs to the reserved split after fitting each model on development."""
     if not X_dev.index.is_unique or not X_holdout.index.is_unique:
         raise ValueError("Rows must have unique split indexes.")
@@ -114,6 +114,8 @@ def evaluate_holdout(models, X_dev, y_dev, X_holdout, y_holdout, *, thresholds=N
     for name, model in models.items():
         start = perf_counter()
         model.fit(X_dev, y_dev)
+        if voting_weights is not None and hasattr(model, "weights_"):
+            np.testing.assert_allclose(model.weights_, voting_weights, rtol=0, atol=1e-12)
         fit_seconds = perf_counter() - start
         p = _default_scores(model, X_holdout)
         predictions[name] = p
@@ -205,3 +207,48 @@ def bootstrap_summary(y, predictions, reference, thresholds, *, repeats=1000):
                      "ap_difference_ci_low_pp": delta_low, "ap_difference_ci_high_pp": delta_high,
                      "recall_50_ci_low": recall_low, "recall_50_ci_high": recall_high, "resamples": repeats})
     return pd.DataFrame(rows)
+
+
+def plot_robustness_summary(stress, path):
+    """Save the existing robustness metrics without rerunning any tests."""
+    import matplotlib.pyplot as plt
+
+    models = list(stress.model.drop_duplicates())
+    scenarios = list(stress.scenario.drop_duplicates())
+    labels = ["Income set to\ndevelopment median", "Income\nunavailable",
+              "Security / construction\ncategories\nunrecognised",
+              "Rare security /\nconstruction profiles\nreplaced with common\ncategories"]
+    fig = plt.figure(figsize=(10.2, 9.0), facecolor="white")
+    grid = fig.add_gridspec(2, 2, width_ratios=[1, .035], left=.23, right=.91,
+                           top=.88, bottom=.235, hspace=.43, wspace=.045)
+    fig.suptitle("Robustness analysis on the holdout set", fontsize=17, y=.965,
+                 color="#132f49", fontweight="bold")
+    panels = [("ap_change_pp", 8, "Average precision change (percentage points)", "AP change (pp)"),
+              ("top10_change_in_defaults_caught", 400,
+               "Change in defaults caught within the top 10%", "Defaults caught")]
+    for i, (field, minimum_limit, title, colour_label) in enumerate(panels):
+        data = stress.pivot(index="model", columns="scenario", values=field).loc[models, scenarios].to_numpy()
+        limit = max(minimum_limit, float(np.abs(data).max()))
+        ax = fig.add_subplot(grid[i, 0])
+        im = ax.imshow(data, cmap="RdBu", vmin=-limit, vmax=limit, aspect="auto")
+        ax.set_yticks(range(len(models)), models, fontsize=10)
+        ax.set_xticks(range(4), labels if i else [""] * 4, fontsize=9)
+        ax.set_title(title, fontsize=12, loc="left", pad=13)
+        ax.tick_params(which="both", length=0, pad=8)
+        ax.set_xticks(np.arange(-.5, 4, 1), minor=True)
+        ax.set_yticks(np.arange(-.5, len(models), 1), minor=True)
+        ax.grid(which="minor", color="white", linewidth=2)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        for row, col in np.ndindex(data.shape):
+            value = data[row, col]
+            text = f"{value:+.3f}" if i == 0 else (f"{int(value):+d}" if value else "0")
+            ax.text(col, row, text, ha="center", va="center", fontsize=11,
+                    color="white" if abs(value) > .58 * limit else "#203448")
+        colour = fig.colorbar(im, cax=fig.add_subplot(grid[i, 1]))
+        colour.set_label(colour_label, fontsize=9)
+        colour.outline.set_visible(False)
+    fig.text(.23, .07, "Changes are relative to the original holdout predictions. Negative values mean lower performance.", fontsize=9)
+    fig.text(.23, .045, "The two income scenarios produce identical results in the saved tests.", fontsize=9)
+    fig.savefig(path, dpi=300, facecolor="white")
+    plt.close(fig)

@@ -5,7 +5,7 @@ from time import perf_counter
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from catboost import CatBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
@@ -18,14 +18,13 @@ from .model_validation import top_fraction_predictions
 
 
 SEED = 42
-MODEL_NAMES = ("Logistic Regression", "Random Forest", "XGBoost")
+MODEL_NAMES = ("Logistic Regression", "CatBoost", "XGBoost")
 SEARCH_GRIDS = {
     "Logistic Regression": {"model__C": [1.0, 0.01, 0.1, 10.0], "prepare__log_income": [False, True], "balanced": [False, True]},
-    "Random Forest": [
-        {"model__n_estimators": [100], "model__max_depth": [12, 18], "model__min_samples_leaf": [10, 5], "balanced": [False, True]},
-        {"model__n_estimators": [160], "model__max_depth": [12, 18], "model__min_samples_leaf": [10], "balanced": [False, True]},
-        {"model__n_estimators": [100], "model__max_depth": [8], "model__min_samples_leaf": [20], "balanced": [False, True]},
-    ],
+    "CatBoost": {
+        "model__iterations": [300, 500], "model__depth": [4, 6],
+        "model__learning_rate": [0.05], "balanced": [False, True],
+    },
     "XGBoost": {
         "model__n_estimators": [120, 220],
         "model__max_depth": [4, 6],
@@ -58,10 +57,11 @@ def make_pipeline(model_name, params=None, *, workers=4):
     """Recreate an unfitted Part E baseline or apply saved Part F parameters."""
     if model_name == "Logistic Regression":
         model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
-    elif model_name == "Random Forest":
-        model = RandomForestClassifier(
-            n_estimators=100, max_depth=12, min_samples_leaf=10,
-            random_state=SEED, n_jobs=workers,
+    elif model_name == "CatBoost":
+        model = CatBoostClassifier(
+            iterations=500, depth=6, learning_rate=0.05, l2_leaf_reg=3,
+            loss_function="Logloss", boosting_type="Plain", random_seed=SEED,
+            thread_count=workers, allow_writing_files=False, verbose=False,
         )
     elif model_name == "XGBoost":
         model = XGBClassifier(
