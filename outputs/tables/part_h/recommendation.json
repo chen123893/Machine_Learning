@@ -1,0 +1,14 @@
+{
+  "model": "Weighted soft voting",
+  "strategy": "max_f1",
+  "threshold": 0.28709110922425657,
+  "selection_basis": "development-selected ensemble with development F1 threshold",
+  "metrics": {
+    "accuracy": 0.7745005717360597,
+    "precision": 0.5396562698917887,
+    "recall": 0.5784661572052402,
+    "f1": 0.5583876704208655,
+    "ap": 0.6358533661448427,
+    "roc_auc": 0.7821060174198895
+  }
+}

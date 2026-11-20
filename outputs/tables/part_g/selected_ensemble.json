@@ -1,0 +1,32 @@
+{
+  "method": "Weighted soft voting",
+  "members": [
+    "CatBoost",
+    "XGBoost"
+  ],
+  "member_parameters": {
+    "CatBoost": {
+      "balanced": false,
+      "model__depth": 6,
+      "model__iterations": 500,
+      "model__learning_rate": 0.05
+    },
+    "XGBoost": {
+      "balanced": false,
+      "model__learning_rate": 0.05,
+      "model__max_depth": 6,
+      "model__n_estimators": 220
+    }
+  },
+  "voting_weights": {
+    "CatBoost": 0.6384095888221049,
+    "XGBoost": 0.3615904111778951
+  },
+  "voting_optimisation": {
+    "library": "Optuna",
+    "objective": "mean_inner_oof_ap",
+    "folds": 3,
+    "trials": 40,
+    "seed": 42
+  }
+}

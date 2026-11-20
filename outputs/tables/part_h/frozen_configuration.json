@@ -1,0 +1,165 @@
+{
+  "age_encoding": "ordered bands 0\u20136 with training-fold mode",
+  "base_model_settings": {
+    "CatBoost": {
+      "balanced": false,
+      "model__depth": 6,
+      "model__iterations": 500,
+      "model__learning_rate": 0.05
+    },
+    "Logistic Regression": {
+      "balanced": false,
+      "model__C": 1.0,
+      "prepare__log_income": true
+    },
+    "XGBoost": {
+      "balanced": false,
+      "model__learning_rate": 0.05,
+      "model__max_depth": 6,
+      "model__n_estimators": 220
+    }
+  },
+  "bootstrap_repeats": 1000,
+  "chosen_model": "Weighted soft voting",
+  "chosen_strategy": "max_f1",
+  "cleaned_sha256": "c1975912253142ef42ed15301e2ace013010a1d2ee1e06dda94fbd7f525b01ff",
+  "comparison_reference": "CatBoost",
+  "development_ap_leader": "Weighted soft voting",
+  "development_folds": 3,
+  "development_rows": 118936,
+  "eligible_features": [
+    "loan_limit",
+    "gender",
+    "loan_type",
+    "loan_purpose",
+    "credit_worthiness",
+    "open_credit",
+    "business_or_commercial",
+    "loan_amount",
+    "term",
+    "neg_amortization",
+    "interest_only",
+    "lump_sum_payment",
+    "construction_type",
+    "occupancy_type",
+    "secured_by",
+    "total_units",
+    "income",
+    "credit_score",
+    "co_applicant_credit_type",
+    "age",
+    "region",
+    "security_type"
+  ],
+  "ensemble_members": [
+    "CatBoost",
+    "XGBoost"
+  ],
+  "ensemble_methods": [
+    "Soft voting",
+    "Weighted soft voting",
+    "Stacking"
+  ],
+  "environment": {
+    "catboost": "1.2.10",
+    "machine": "arm64",
+    "matplotlib": "3.11.1",
+    "numpy": "2.5.2",
+    "optuna": "5.1.0",
+    "pandas": "2.3.3",
+    "python": "3.12.14",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.18.1",
+    "system": "Darwin",
+    "xgboost": "3.4.1"
+  },
+  "excluded_features": {
+    "approv_in_adv": "Approval timing is unverified.",
+    "credit_type": "The EQUI category has a near-deterministic association with default.",
+    "dtir1": "Availability of the recorded underwriting ratio is unverified.",
+    "id": "Application identifier.",
+    "interest_rate_spread": "Pricing field with outcome-linked missingness.",
+    "ltv": "Depends on the valuation; missingness is outcome-linked.",
+    "property_value": "Valuation availability and missingness require verification.",
+    "rate_of_interest": "Pricing field with outcome-linked missingness.",
+    "submission_of_application": "Workflow field with outcome-linked missingness.",
+    "upfront_charges": "Pricing field with outcome-linked missingness.",
+    "year": "Single recorded year; no time variation in this dataset."
+  },
+  "gender_encoding": "nominal one-hot all source categories",
+  "holdout_fraction": 0.2,
+  "holdout_rows": 29734,
+  "raw_sha256": "4234b122f463ff4d563de600ade5ec347a9ab8f02cfc204535f7c0d4929bfe70",
+  "seed": 42,
+  "stacking_meta_model": "LogisticRegression",
+  "stacking_oof_folds": 3,
+  "threshold_folds": 3,
+  "thresholds": {
+    "CatBoost": {
+      "fixed_050": 0.5,
+      "max_f1": 0.2711962885033949,
+      "max_f2": 0.12899553030841973,
+      "recall_50": 0.34827783472782087,
+      "recall_60": 0.2684984851090436,
+      "recall_70": 0.21064635406096485,
+      "recall_80": 0.16153295034392448
+    },
+    "Logistic Regression": {
+      "fixed_050": 0.5,
+      "max_f1": 0.2774475793530712,
+      "max_f2": 0.12419425764621718,
+      "recall_50": 0.33036878409552706,
+      "recall_60": 0.26068312283316764,
+      "recall_70": 0.20104104273563345,
+      "recall_80": 0.15511257171052487
+    },
+    "Soft voting": {
+      "fixed_050": 0.5,
+      "max_f1": 0.2898374487933698,
+      "max_f2": 0.12760983900138403,
+      "recall_50": 0.34922955674631173,
+      "recall_60": 0.26911883216807075,
+      "recall_70": 0.21291835415149357,
+      "recall_80": 0.16079552821207074
+    },
+    "Stacking": {
+      "fixed_050": 0.5,
+      "max_f1": 0.2610039105263558,
+      "max_f2": 0.12633472441924426,
+      "recall_50": 0.3332512414781254,
+      "recall_60": 0.24015586030963962,
+      "recall_70": 0.1860693474509711,
+      "recall_80": 0.14553371326738843
+    },
+    "Weighted soft voting": {
+      "fixed_050": 0.5,
+      "max_f1": 0.28709110922425657,
+      "max_f2": 0.12635340986251017,
+      "recall_50": 0.3492400579803365,
+      "recall_60": 0.2687768572471616,
+      "recall_70": 0.21213365073936719,
+      "recall_80": 0.1609082000807672
+    },
+    "XGBoost": {
+      "fixed_050": 0.5,
+      "max_f1": 0.2765529751777649,
+      "max_f2": 0.13804076611995697,
+      "recall_50": 0.3491290211677551,
+      "recall_60": 0.26992517709732056,
+      "recall_70": 0.2134208232164383,
+      "recall_80": 0.15918123722076416
+    }
+  },
+  "top_review_fraction": 0.1,
+  "voting_optimisation": {
+    "folds": 3,
+    "library": "Optuna",
+    "objective": "mean_inner_oof_ap",
+    "seed": 42,
+    "trials": 40
+  },
+  "voting_weights": {
+    "CatBoost": 0.6384095888221049,
+    "XGBoost": 0.3615904111778951
+  }
+}
